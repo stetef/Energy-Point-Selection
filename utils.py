@@ -41,7 +41,13 @@ def parse_file(filename):
 
 def get_coeffs(n):
     """Randomly generate coeffs that add to one."""
-    coeffs = np.random.rand(n)
+    while True:
+        coeffs = np.random.rand(n)
+        proba = np.random.rand(n)
+        set_to_zero = proba < 0.5
+        coeffs[set_to_zero] = 0
+        if sum(coeffs) != 0:
+            break
     scale = 1/np.sum(coeffs)
     coeffs = coeffs * scale
     return coeffs
@@ -64,6 +70,7 @@ def generate_linear_combos(Refs, scale=0, N=10):
 
 def visualize_energy_points(plot, Energy, Refs, energy_points,
                             fontsize=20, ticks=(5, 10), label=None):
+    """Visualize results from RFE on reference spectra."""
     fig, ax = plot
     for i, ref in enumerate(Refs):
         ax.plot(Energy, ref, '-', linewidth=2, c=plt.cm.tab20(i))
