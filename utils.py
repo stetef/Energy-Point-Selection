@@ -7,6 +7,15 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator, FormatStrFormatter
 
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.neural_network import MLPRegressor
+from sklearn.linear_model import Lasso
+
+from scipy.interpolate import interp1d, UnivariateSpline
+
 mpl.rcParams['font.family'] = ['sans-serif']
 mpl.rcParams['font.sans-serif'] = ['Arial']
 
@@ -39,12 +48,12 @@ def parse_file(filename):
     df = pd.DataFrame(data[1:], columns=columns)
     return df
 
-def get_coeffs(n):
+def get_coeffs(n, dropout):
     """Randomly generate coeffs that add to one."""
     while True:
         coeffs = np.random.rand(n)
         proba = np.random.rand(n)
-        set_to_zero = proba < 0.5
+        set_to_zero = proba < dropout
         coeffs[set_to_zero] = 0
         if sum(coeffs) != 0:
             break
@@ -52,13 +61,13 @@ def get_coeffs(n):
     coeffs = coeffs * scale
     return coeffs
 
-def generate_linear_combos(Refs, scale=0, N=10):
+def generate_linear_combos(Refs, scale=0, N=10, dropout=0.5):
     """Create linear combo dataset."""
     n = len(Refs)
     Data = []
     Coeffs = []
     for i in range(N):
-        coeffs = get_coeffs(n)
+        coeffs = get_coeffs(n, dropout)
         if scale != 0:
             noise = np.random.normal(scale=scale,
                                      size=Refs.shape[1])
@@ -79,3 +88,10 @@ def visualize_energy_points(plot, Energy, Refs, energy_points,
         ax.axvline(energy, c='gray', linestyle='--', linewidth=0.5)
     if label is not None:
         ax.set_title(label, fontsize=fontsize)
+
+def get_delta_E(energy, ref, set_whiteline=11865):
+    """Get delta E from set whiteline."""
+    interpolator = UnivariateSpline(energy, np.array(ref) - 0.5, s=0)
+    whiteline = interpolator.roots()[0]
+    delta_E = set_whiteline - whiteline
+    return delta_E
