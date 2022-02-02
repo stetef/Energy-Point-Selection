@@ -51,10 +51,11 @@ class Selector:
 
         return self.rfe, self.evaluate_rfe(**kwargs)
 
-    def evaluate_rfe(self, **kwargs):
+    def evaluate_rfe(self, verbose=True, **kwargs):
         """Evaluate model using cross validation."""
         cv = RepeatedKFold(n_splits=10, n_repeats=5, random_state=42)
         n_scores = cross_val_score(self.rfe.estimator_, self.Data,
                                    self.Coeffs, cv=cv, **kwargs)
-        print('Score: %.3f (%.3f)' % (np.mean(n_scores), np.std(n_scores)))
+        if verbose:
+            print('Score: %.3f (%.3f)' % (np.mean(n_scores), np.std(n_scores)))
         return np.mean(n_scores)

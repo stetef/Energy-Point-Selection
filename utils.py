@@ -15,6 +15,8 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.linear_model import Lasso
 
 from scipy.interpolate import interp1d, UnivariateSpline
+from scipy.optimize import minimize
+from sklearn.metrics import *
 
 mpl.rcParams['font.family'] = ['sans-serif']
 mpl.rcParams['font.sans-serif'] = ['Arial']
@@ -61,7 +63,7 @@ def get_coeffs(n, dropout):
     coeffs = coeffs * scale
     return coeffs
 
-def generate_linear_combos(Refs, scale=0, N=10, dropout=0.5):
+def generate_linear_combos(Refs, scale=0, N=10, dropout=0.5, training=True):
     """Create linear combo dataset."""
     n = len(Refs)
     Data = []
@@ -75,7 +77,10 @@ def generate_linear_combos(Refs, scale=0, N=10, dropout=0.5):
             noise = 0
         Data.append(Refs.T @ coeffs + noise)
         Coeffs.append(coeffs)
-    return np.array(Data), np.array(Coeffs)
+    if training:
+        return np.array(Data), -np.ones((N, 1))
+    else:
+        return np.array(Data), np.array(Coeffs)
 
 def visualize_energy_points(plot, Energy, Refs, energy_points,
                             fontsize=20, ticks=(5, 10), label=None):
@@ -89,9 +94,35 @@ def visualize_energy_points(plot, Energy, Refs, energy_points,
     if label is not None:
         ax.set_title(label, fontsize=fontsize)
 
-def get_delta_E(energy, ref, set_whiteline=11865):
-    """Get delta E from set whiteline."""
-    interpolator = UnivariateSpline(energy, np.array(ref) - 0.5, s=0)
-    whiteline = interpolator.roots()[0]
-    delta_E = set_whiteline - whiteline
-    return delta_E
+def scale_coeffs_to_add_to_one(coeff_mtx):
+    return np.array([coeffs/np.sum(coeffs) for coeffs in coeff_mtx])
+
+def loss(coeffs, Refs, target, metric='mean_absolute_error'):
+    calc = Refs.T @ coeffs
+    calc = calc - np.min(calc)
+    return eval(metric)(calc, target) + 10*(np.sum(coeffs) - 1)**2
+
+def get_coeffs_from_sepctra(spectra, Refs):
+    m = Refs.shape[0]
+    coeffs_0 = np.ones(m)/m
+    bounds = np.zeros((m, 2))
+    bounds[:, 1] = 1
+    coeffs = np.array([minimize(loss, coeffs_0, args=(Refs, spectrum), bounds=bounds)['x']
+                       for spectrum in spectra])
+    return scale_coeffs_to_add_to_one(coeffs)
+
+def plot_reconstructions(data, coeffs, m, Energy, Refs):
+    """Recon plot of spectra."""
+    fig, axes = plt.subplots(figsize=(5*m, 5), ncols=m)
+    plt.subplots_adjust(wspace=0)
+    for i in range(m):
+        pred = Refs.T @ coeffs[i]
+        pred = pred - np.min(pred)
+        true = data[i]
+        ax = axes[i]
+        ax.plot(Energy, pred, '-', linewidth=4, c=plt.cm.tab20(0), label='predicted')
+        ax.plot(Energy, true, '-', linewidth=4, c=plt.cm.tab20(2), label='true')
+        format_axis(ax, ticks=(10, 20), fontsize=20)
+        ax.legend(fontsize=20, loc=4)
+    plt.show()
+    print(f'Add to one? {np.sum(coeffs, axis=1)}')
