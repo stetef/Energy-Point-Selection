@@ -186,7 +186,7 @@ def plot_spectra(Energy, data, mod=0, alpha=0.01):
     plt.show()
 
 def two_dimensional_visualization(data, Refs, data_columns, N_refs=None, ncol=2,
-                                  method='PCA'):
+                                  method='PCA', fontsize=18):
     """Plot dataset and Refs in 2D using dimensionality reduction."""
     fig, ax = plt.subplots(figsize=(4, 4))
 
@@ -236,9 +236,35 @@ def two_dimensional_visualization(data, Refs, data_columns, N_refs=None, ncol=2,
             np.average(transformed_Refs[:,1]),
             'o', markersize=10, c='k', label='centroid')
 
-    ax.legend(fontsize=16, loc='center left', bbox_to_anchor=(1., .5), ncol=ncol)
+    ax.legend(fontsize=fontsize - 4, loc='center left', bbox_to_anchor=(1., .5), ncol=ncol)
     ax.set_yticks([])
     ax.set_xticks([])
-    ax.set_xlabel(f'${method}_1$', fontsize=18)
-    ax.set_ylabel(f'${method}_2$', fontsize=18)
+    ax.set_xlabel(f'${method}_1$', fontsize=fontsize)
+    ax.set_ylabel(f'${method}_2$', fontsize=fontsize)
     plt.show()
+
+def set_spine_width(ax, width=2):
+    for spine in ['top','bottom','left','right']:
+        ax.spines[spine].set_linewidth(width)
+
+def histogram(plot, x, bins=50, color=plt.cm.tab20(2), fontsize=18, ticks=(1, 10),
+              label_map=None):
+    fig, ax = plot
+    n, bin_vals, patches = plt.hist(x, bins=bins, range=(0, bins),
+                                    color=color, edgecolor='w')
+    plt.xlim(-1, bins)
+    ax.set_ylabel('Counts', fontsize=fontsize + 2)
+    ax.set_xlabel('Index', fontsize=fontsize + 2)
+    ax.xaxis.set_minor_locator(MultipleLocator(ticks[0]))
+    ax.xaxis.set_major_locator(MultipleLocator(ticks[1]))
+    ax.set_yticklabels(np.array(ax.get_yticks(), dtype=int), fontsize=fontsize)
+    ax.set_xticklabels(np.array(ax.get_xticks(), dtype=int), fontsize=fontsize)
+    ax.tick_params(direction='out', width=3, length=13, which='major', axis='x')
+    ax.tick_params(direction='out', width=2, length=7, which='minor', axis='x')
+    ax.tick_params(direction='in', width=3, length=13, which='major', axis='y')
+    if label_map is not None:
+        for idx, label in label_map.items():
+            rect = patches[idx]
+            height = rect.get_height()
+            ax.text(rect.get_x() + rect.get_width() / 2, height + 0.01, label,
+                    ha='center', va='bottom', fontsize=fontsize - 2)

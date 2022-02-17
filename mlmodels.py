@@ -34,7 +34,13 @@ class ClipConstraint(Constraint):
 
 
 class WGAN:
-    """Wasserstein GAN."""
+    """
+    WGAN.
+
+    A Wasserstein GAN uses the Wasserstein/ Earth mover distance as a loss,
+    weight clipping, and a 'critic' instead of a discriminator
+    to help with training and convergence.
+    """
 
     def __init__(self, refs, latent_dim):
         """Init function."""
@@ -80,7 +86,7 @@ class WGAN:
                         input_dim=32))
         model.add(BatchNormalization())
         model.add(LeakyReLU())
-        model.add(Dense(n_outputs, activation='linear'))
+        model.add(Dense(n_outputs, activation='tanh'))
         return model
 
     def _generate_latent_points(self, n):
@@ -106,7 +112,7 @@ class WGAN:
         model = Sequential(name='GAN')
         model.add(generator)
         model.add(critic)
-        optimizer = keras.optimizers.Adam(learning_rate=0.0002,
+        optimizer = keras.optimizers.Adam(learning_rate=0.00001,
                                           beta_1=0.5, beta_2=0.9)
         model.compile(loss=self._wasserstein_loss, optimizer=optimizer)
         return model
@@ -116,7 +122,7 @@ class WGAN:
         fig, ax = plt.subplots(figsize=(6, 4))
         plt.plot(critic_losses, label='critic loss')
         # plt.plot(gan_losses, label='gan loss')
-        xticks = np.array(ax.get_xticks(), dtype=int) + 1
+        xticks = np.array(ax.get_xticks(), dtype=int)
         ax.set_xticklabels(xticks, fontsize=16)
         ax.set_yticklabels(np.array(ax.get_yticks(), dtype=float), fontsize=16)
         ax.set_xlabel('Epoch', fontsize=18)
@@ -187,7 +193,12 @@ class WGAN:
 
 
 class WGAN_GP(WGAN):
-    """WGAN-GP."""
+    """
+    WGAN-GP.
+
+    A WGAN-GP uses gradient penalty instead of the weight clipping
+    to enforce the Lipschitz constraint.
+    """
 
     def __init__(self, gp_weight, *args):
         """
@@ -197,10 +208,26 @@ class WGAN_GP(WGAN):
             gp_weight - extra parameter for the weight of the graident penalty
 
         Inherit all other attributes from a normal WGAN.
-
         """
         self.gp_weight = gp_weight
         super().__init__(*args)
+
+    def _define_discriminator(self, n_inputs=2):
+        """
+        Initialize discriminator.
+
+        The critic for a WGAN-GP does not have weight clipping 
+        or batch normalization.
+        """
+        model = Sequential(name='Discriminator')
+        model.add(Dense(32, kernel_initializer='he_uniform',
+                        input_dim=n_inputs))
+        model.add(LeakyReLU())
+        model.add(Dense(1, activation='linear'))
+        optimizer = keras.optimizers.Adam(learning_rate=0.0001,
+                                          beta_1=0.5, beta_2=0.9)
+        model.compile(loss=self._discriminator_loss, optimizer=optimizer)
+        return model
 
     def gradient_penalty(self, batch_size, real_data, fake_data):
         """
@@ -211,8 +238,9 @@ class WGAN_GP(WGAN):
         """
         # Start with the interpolated data
         alpha = tf.random.normal([batch_size, self.y_shape], 0.0, 1.0)
-        diff = fake_data - real_data
-        interpolated = real_data + alpha * diff
+        # diff = fake_data - real_data
+        # interpolated = real_data + alpha * diff
+        interpolated = alpha * real_data + (1 - alpha)*fake_data
 
         with tf.GradientTape() as gp_tape:
             gp_tape.watch(interpolated)
@@ -223,7 +251,7 @@ class WGAN_GP(WGAN):
         grads = gp_tape.gradient(pred, [interpolated])[0]
         # 3. Calculate the norm of the gradients.
         norm = tf.sqrt(tf.reduce_sum(tf.square(grads), axis=1))
-        gp = tf.reduce_mean((norm - 1.0) ** 2)
+        gp = tf.reduce_mean((norm - 0.0) ** 2)
         return tf.cast(gp, tf.float64)
 
     def train_critic(self, half_batch, losses, **kwargs):
@@ -236,7 +264,6 @@ class WGAN_GP(WGAN):
         temp_cost = self._discriminator_loss(real_data=X_real,
                                              fake_data=X_fake)
         gp = self.gradient_penalty(half_batch, X_real, X_fake)
-        print(gp, temp_cost)
         critic_loss = temp_cost + gp * self.gp_weight
         losses.append(critic_loss)
         with tf.GradientTape() as tape:
