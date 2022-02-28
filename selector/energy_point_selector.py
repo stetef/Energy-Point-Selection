@@ -51,7 +51,10 @@ class Selector:
         rfe = RFE(model, n_features_to_select=n_points, step=1)
         self.rfe = rfe.fit(self.Data, self.Coeffs)
 
-        return self.rfe, self.evaluate_rfe(verbose=verbose, scoring=scoring)
+        if verbose:
+            return self.rfe, self.evaluate_rfe(scoring=scoring)
+        else:
+            return self.rfe
 
     def evaluate_rfe(self, verbose=True,
                      scoring='neg_root_mean_squared_error'):
@@ -59,6 +62,5 @@ class Selector:
         cv = RepeatedKFold(n_splits=10, n_repeats=5, random_state=42)
         n_scores = cross_val_score(self.rfe.estimator_, self.Data,
                                    self.Coeffs, cv=cv, scoring=scoring)
-        if verbose:
-            print('Score: %.3f (%.3f)' % (np.mean(n_scores), np.std(n_scores)))
+        print('Score: %.3f (%.3f)' % (np.mean(n_scores), np.std(n_scores)))
         return np.mean(n_scores)
