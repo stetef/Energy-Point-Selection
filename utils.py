@@ -10,6 +10,7 @@ from matplotlib.ticker import MultipleLocator, FormatStrFormatter
 
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import *
 
 import umap
@@ -73,10 +74,12 @@ def generate_linear_combos(Refs, scale=0, N=10, dropout=0.5, training=True):
             noise = 0
         Data.append(Refs.T @ coeffs + noise)
         Coeffs.append(coeffs)
+    Data = np.array(Data)
+    Data = Data - np.min(Data)
     if training:
-        return np.array(Data), -np.ones((N, 1))
+        return Data, -np.ones((N, 1))
     else:
-        return np.array(Data), np.array(Coeffs)
+        return Data, np.array(Coeffs)
 
 def make_scree_plot(data, n=5, threshold=0.95, show_first_PC=True):
     """
@@ -268,3 +271,35 @@ def histogram(plot, x, bins=50, color=plt.cm.tab20(2), fontsize=18, ticks=(1, 10
             height = rect.get_height()
             ax.text(rect.get_x() + rect.get_width() / 2, height + 0.01, label,
                     ha='center', va='bottom', fontsize=fontsize - 2)
+
+def get_metrics(indices, data, coeffs, test_data, test_coeffs, Refs,
+                metric='explained_variance_score', verbose=True):
+    metrics = []
+    for i in range(len(indices)):
+        idx = indices[:i + 1]
+        score = train_RF(Refs, idx, data, coeffs, test_data, test_coeff,
+                         metric=metric) 
+        if verbose:
+            print(f' n = {i}: score = {score}')
+        metrics.append(score)
+    return np.array(metrics)
+
+def train_RF(Refs, idx, train_data, train_coeffs, test_data, test_coeff,
+             metric="explained_variance_score"):
+    
+    reg = RandomForestRegressor(n_estimators=30)
+    reg.fit(train_data[:, idx], train_coeffs)
+
+    pred_coeff = reg.predict(test_data[:, idx])
+
+    test_scores = []
+    m = len(test_data)
+    for j in range(m):
+        pred_spectra = Refs.T @ pred_coeff[j]
+        pred_spectra = pred_spectra - np.min(pred_spectra)
+        true_spectra = test_data[j]
+
+        temp_score = eval(metric)(pred_spectra, true_spectra)
+        test_scores.append(temp_score)
+    score = np.average(test_scores)
+    return score
