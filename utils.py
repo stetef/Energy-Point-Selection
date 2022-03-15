@@ -140,18 +140,18 @@ def scale_coeffs_to_add_to_one(coeff_mtx):
     """For every coeff list in coeff_mtx, scale to add to one."""
     return np.array([coeffs/np.sum(coeffs) for coeffs in coeff_mtx])
 
-def mae_loss(coeffs, Refs, target, metric='mean_absolute_error'):
+def loss_function(coeffs, Refs, target, metric='mean_absolute_error'):
     calc = Refs.T @ coeffs
     calc = calc - np.min(calc)  # set min to zero
     return eval(metric)(calc, target) + 10*(np.sum(coeffs) - 1)**2
 
-def get_coeffs_from_sepctra(spectra, Refs):
+def get_coeffs_from_spectra(spectra, Refs):
     """Find the coeffs that minimize spectral recontruction error."""
     m = Refs.shape[0]
     coeffs_0 = np.ones(m)/m
     bounds = np.zeros((m, 2))
     bounds[:, 1] = 1
-    coeffs = np.array([minimize(mae_loss, coeffs_0,
+    coeffs = np.array([minimize(loss_function, coeffs_0,
                        args=(Refs, spectrum), bounds=bounds)['x']
                        for spectrum in spectra])
     return scale_coeffs_to_add_to_one(coeffs)
