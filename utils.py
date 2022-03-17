@@ -1,4 +1,5 @@
 """Module contains commonly used functions analysis."""
+import os, re
 
 import numpy as np
 import pandas as pd
@@ -22,11 +23,11 @@ def read_tddft_spectrum_file(path):
     """Read spectrum file."""
     return np.loadtxt(path).T
 
-def format_axis(ax, energyrange=None, ticks=(5, 10), fontsize=20):
+def format_axis(ax, energyrange=None, ticks=(5, 10), fontsize=20, xlabel='Energy (eV)'):
     """Format axes for spectra plots."""
     ax.set_yticks([])
     ax.set_xlim(energyrange)
-    ax.set_xlabel('Energy (eV)', fontsize=fontsize)
+    ax.set_xlabel(xlabel, fontsize=fontsize)
     ax.xaxis.set_minor_locator(MultipleLocator(ticks[0]))
     ax.xaxis.set_major_locator(MultipleLocator(ticks[1]))
     ax.set_xticklabels(np.array(ax.get_xticks(), dtype=int), fontsize=fontsize - 2)
@@ -285,7 +286,7 @@ def get_metrics(indices, data, coeffs, test_data, test_coeffs, Refs,
     return np.array(metrics)
 
 def train_RF(Refs, idx, train_data, train_coeffs, test_data, test_coeff,
-             metric="explained_variance_score"):
+             metric="explained_variance_score", spectra=True):
     
     reg = RandomForestRegressor(n_estimators=30)
     reg.fit(train_data[:, idx], train_coeffs)
@@ -295,11 +296,79 @@ def train_RF(Refs, idx, train_data, train_coeffs, test_data, test_coeff,
     test_scores = []
     m = len(test_data)
     for j in range(m):
-        pred_spectra = Refs.T @ pred_coeff[j]
-        pred_spectra = pred_spectra - np.min(pred_spectra)
-        true_spectra = test_data[j]
-
-        temp_score = eval(metric)(pred_spectra, true_spectra)
+        if spectra:
+            pred_spectra = Refs.T @ pred_coeff[j]
+            pred_spectra = pred_spectra - np.min(pred_spectra)
+            true_spectra = test_data[j]
+            temp_score = eval(metric)(pred_spectra, true_spectra)
+        else:
+            temp_score = eval(metric)(pred_coeff, test_coeff)
         test_scores.append(temp_score)
     score = np.average(test_scores)
     return score
+
+def preprocess_df(df):
+    headers = df.iloc[0]
+    df = df.rename(columns=headers)
+    df = df.drop(0)
+    return df
+
+def get_data_from_set(Set, n_pts, Energies, path='Experimental Data/'):
+    """Returns list of dictionaries."""
+    
+    directory_regex = re.compile(f'.*Set {Set}.*')
+    file_regex = re.compile('.*.csv')
+    
+    file_names = []
+    for root, dirs, files in os.walk(path):
+        for directory in dirs:
+            if directory_regex.match(directory):
+                files = os.listdir(path + directory)
+                for file in files:
+                    if file_regex.match(file):
+                        file_names.append(path + directory + '/' + file)
+    
+    exp_data_dfs = []
+    for filename in file_names:
+        exp_data_dfs.append(pd.read_csv(filename))
+    
+    Exp_Data = [{} for i in range(n_pts)]
+    for i in range(9):
+        df = exp_data_dfs[i]
+        pixels = np.array(df['pixel_number'], dtype=int)
+        
+        if Set in [1, 2, 4, 5]:
+            x_pos = np.array(df[' axis_pos[mm]'], dtype=float)
+            y_pos = np.array(df[' yaxis_pos[mm]'], dtype=float)
+        elif Set == 3:
+            x_pos = np.array(df[' xaxis_pos[mm]'], dtype=float)
+            y_pos = np.array(df[' axis_pos[mm]'], dtype=float) 
+        
+        I = df[' As[]']
+        E = Energies[i]
+
+        for j in range(n_pts):
+            pixel = pixels[j]
+            entry = Exp_Data[j]
+            if entry == {}:
+                Exp_Data[j] = {'pixel': pixel, 'x': x_pos[j], 'y': y_pos[j], 'E': [E],
+                               'I': [I[j]]}
+            else:
+                Exp_Data[j]['I'].append(I[j])
+                Exp_Data[j]['E'].append(E)
+    
+    return Exp_Data
+
+def get_all_data(unit='eV'):
+    Alldata = {}
+    Energies = np.array([11.8665, 11.87, 11.8735, 11.8765, 11.879,
+                     11.8855, 11.9, 11.904, 11.9095])
+    if unit == 'eV':
+        Energies = Energies* 1000  
+    for Set in range(1, 6):
+        if Set in [1, 2, 4, 5]:
+            n_pts = 15
+        elif Set == 3:
+            n_pts = 5
+        Alldata[Set] =  get_data_from_set(Set, n_pts, Energies)
+    return Alldata
