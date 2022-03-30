@@ -55,9 +55,9 @@ def get_coeffs(n, dropout):
         proba = np.random.rand(n)
         set_to_zero = proba < dropout
         coeffs[set_to_zero] = 0
-        if sum(coeffs) != 0:
+        if np.sum(coeffs) != 0:
             break
-    scale = 1/np.sum(coeffs)
+    scale = 1 / np.sum(coeffs)
     coeffs = coeffs * scale
     return coeffs
 
@@ -73,10 +73,12 @@ def generate_linear_combos(Refs, scale=0, N=10, dropout=0.5, training=True):
                                      size=Refs.shape[1])
         else:
             noise = 0
-        Data.append(Refs.T @ coeffs + noise)
+        x = Refs.T @ coeffs
+        x = x - np.min(x)
+        Data.append(x + noise)
         Coeffs.append(coeffs)
     Data = np.array(Data)
-    Data = Data - np.min(Data)
+    #Data = Data - np.min(Data)
     if training:
         return Data, -np.ones((N, 1))
     else:
@@ -139,39 +141,75 @@ def visualize_energy_points(plot, Energy, Refs, energy_points,
 
 def scale_coeffs_to_add_to_one(coeff_mtx):
     """For every coeff list in coeff_mtx, scale to add to one."""
-    return np.array([coeffs/np.sum(coeffs) for coeffs in coeff_mtx])
+    return np.array([coeffs / np.sum(coeffs) for coeffs in coeff_mtx])
 
-def loss_function(coeffs, Refs, target, metric='mean_absolute_error'):
+def loss_function(coeffs, Refs, target, metric):
     calc = Refs.T @ coeffs
     calc = calc - np.min(calc)  # set min to zero
     return eval(metric)(calc, target) + 10*(np.sum(coeffs) - 1)**2
 
-def get_coeffs_from_spectra(spectra, Refs):
+def loss_function_with_scaling(coeffs, Refs, target, metric):
+    calc = Refs.T @ coeffs[1:]
+    calc = calc - np.min(calc)  # set min to zero
+    calc = calc * coeffs[0]  # first coeff := scaling factor
+    return eval(metric)(calc, target) + 10*(np.sum(coeffs[1:]) - 1)**2
+
+def get_coeffs_from_spectra(spectra, Refs, scaling=False, tol=None,
+                            metric='mean_absolute_error'):
     """Find the coeffs that minimize spectral recontruction error."""
     m = Refs.shape[0]
-    coeffs_0 = np.ones(m)/m
-    bounds = np.zeros((m, 2))
-    bounds[:, 1] = 1
-    coeffs = np.array([minimize(loss_function, coeffs_0,
-                       args=(Refs, spectrum), bounds=bounds)['x']
-                       for spectrum in spectra])
-    return scale_coeffs_to_add_to_one(coeffs)
+    if scaling:
+        coeffs_0 = np.ones(m + 1) / (m + 1)
+        bounds = np.zeros((m + 1, 2))
+        bounds[:, 1] = 1
+        bounds[0, 1] = 5
+        coeffs = np.array([minimize(loss_function_with_scaling, coeffs_0,
+                           args=(Refs, spectrum, metric), bounds=bounds)['x']
+                           for spectrum in spectra])
+        scale, coefficients = coeffs[:, 0], scale_coeffs_to_add_to_one(coeffs[:, 1:])
+        if tol is not None:
+            if np.sum(coefficients < tol) == len(coefficients):
+                idx = np.argmax(coefficients)
+                coefficients = np.zeros(len(coefficients))
+                coefficients[idx] = 1
+            else:
+                coefficients[coefficients < tol] = 0
+        return scale, scale_coeffs_to_add_to_one(coefficients)
+    else:
+        coeffs_0 = np.ones(m)/m
+        bounds = np.zeros((m, 2))
+        bounds[:, 1] = 1
+        coeffs = np.array([minimize(loss_function, coeffs_0,
+                           args=(Refs, spectrum, metric), bounds=bounds)['x']
+                           for spectrum in spectra])
+        coefficients = scale_coeffs_to_add_to_one(coeffs)
+        if np.sum(coefficients < tol) == len(coefficients):
+            idx = np.argmax(coefficients)
+            coefficients = np.zeros(len(coefficients))
+            coefficients[idx] = 1
+        else:
+            coefficients[coefficients < tol] = 0
+        return scale_coeffs_to_add_to_one(coefficients)
 
-def plot_reconstructions(data, coeffs, m, Energy, Refs, metric='mean_absolute_error',
-                         verbose=True):
+def plot_reconstructions(plot, data, coeffs, m, Energy, Refs, verbose=True,
+                         metric='mean_absolute_error', scale=None):
     """Recon plot of spectra in a row."""
-    fig, axes = plt.subplots(figsize=(5*m, 5), ncols=m)
-    plt.subplots_adjust(wspace=0)
+    fig, axes = plot
+    preds, truths = [], []
     for i in range(m):
         pred = Refs.T @ coeffs[i]
+        if scale is not None:
+            pred = pred * scale[i]
         pred = pred - np.min(pred)
+        preds.append(pred)
         true = data[i]
+        true = true - np.min(true)
+        truths.append(truths)
         ax = axes[i]
         ax.plot(Energy, pred, '-', linewidth=4, c=plt.cm.tab20(0), label='predicted')
         ax.plot(Energy, true, '-', linewidth=4, c=plt.cm.tab20(2), label='true')
         format_axis(ax, ticks=(10, 20), fontsize=20)
         ax.legend(fontsize=20, loc=4)
-    plt.show()
     metric_name = metric.replace('_', ' ')
     if verbose:
         print(f'{metric_name}: {eval(metric)(pred, true)}')
@@ -359,10 +397,8 @@ def get_data_from_set(Set, n_pts, Energies, path='Experimental Data/'):
     
     return Exp_Data
 
-def get_all_data(unit='eV'):
+def get_all_data(Energies, unit='eV'):
     Alldata = {}
-    Energies = np.array([11.8665, 11.87, 11.8735, 11.8765, 11.879,
-                     11.8855, 11.9, 11.904, 11.9095])
     if unit == 'eV':
         Energies = Energies* 1000  
     for Set in range(1, 6):
@@ -372,3 +408,20 @@ def get_all_data(unit='eV'):
             n_pts = 5
         Alldata[Set] =  get_data_from_set(Set, n_pts, Energies)
     return Alldata
+
+def set_spine_width(ax, width=2):
+    for spine in ['top','bottom','left','right']:
+        ax.spines[spine].set_linewidth(width)
+
+def turn_off_spines(ax, spines=['top','bottom','left','right']):
+    for spine in spines:
+        ax.spines[spine].set_visible(False)
+
+def get_xy_from_colms(df, clm1, clm2):
+    """Get arrays from dataframe df."""
+    x = np.array(df[clm1], dtype=float)
+    x = x * 1000  # convert to eV
+    y = np.array(df[clm2], dtype=float)
+    y = y - np.min(y)
+    y = y / np.max(y)
+    return x, y
