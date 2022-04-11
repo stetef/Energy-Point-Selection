@@ -499,7 +499,7 @@ def get_error(coeffs, target, Refs, scale,
     return eval(metric)(pred_spectrum, target)
 
 def get_errors_with_different_noises(Y_Refs, noises=np.arange(0, 0.06, 0.01),
-                                     metric='mean_absolute_error'):
+                                     metric='mean_squared_error', lambda1=0.1):
     """Return spectral recon error given minimization process for scaled vs unscaled spectra."""
     Errors = []
     for scale in noises:
@@ -509,8 +509,10 @@ def get_errors_with_different_noises(Y_Refs, noises=np.arange(0, 0.06, 0.01),
         kwargs = {'N': N, 'scale': scale, 'dropout': 0.9, 'training': False}
         test_data, test_coeffs = generate_linear_combos(Y_Refs, **kwargs)
 
-        unscaled_coeffs = get_coeffs_from_spectra(test_data, Y_Refs, scaling=False)
-        scales, scaled_coeffs = get_coeffs_from_spectra(test_data, Y_Refs, scaling=True)
+        unscaled_coeffs = get_coeffs_from_spectra(test_data, Y_Refs, scaling=False,
+                                                  lambda1=lambda1, metric=metric)
+        scales, scaled_coeffs = get_coeffs_from_spectra(test_data, Y_Refs, scaling=True,
+                                                        lambda1=lambda1, metric=metric)
 
         errors = [[], [], []]
         i = 0
