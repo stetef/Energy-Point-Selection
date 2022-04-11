@@ -30,6 +30,7 @@ def format_axis(ax, energyrange=None, ticks=(5, 10), fontsize=20, xlabel='Energy
     ax.set_xlabel(xlabel, fontsize=fontsize)
     ax.xaxis.set_minor_locator(MultipleLocator(ticks[0]))
     ax.xaxis.set_major_locator(MultipleLocator(ticks[1]))
+    ax.set_xticks(ax.get_xticks())
     ax.set_xticklabels(np.array(ax.get_xticks(), dtype=int), fontsize=fontsize - 2)
     ax.tick_params(direction='in', width=3, length=13, which='major')
     ax.tick_params(direction='in', width=2, length=7, which='minor')
@@ -143,19 +144,39 @@ def scale_coeffs_to_add_to_one(coeff_mtx):
     """For every coeff list in coeff_mtx, scale to add to one."""
     return np.array([coeffs / np.sum(coeffs) for coeffs in coeff_mtx])
 
-def loss_function(coeffs, Refs, target, metric):
+def objective_function(coeffs, Refs, target, metric, lambda1, lambda2):
     calc = Refs.T @ coeffs
     calc = calc - np.min(calc)  # set min to zero
-    return eval(metric)(calc, target) + 10*(np.sum(coeffs) - 1)**2
+    return eval(metric)(calc, target) \
+           + lambda1 * np.sum(np.abs(coeffs)) \
+           + lambda2 * (np.sum(coeffs) - 1)**2
 
-def loss_function_with_scaling(coeffs, Refs, target, metric):
+def objective_function_with_scaling(coeffs, Refs, target, metric, lambda1, lambda2):
     calc = Refs.T @ coeffs[1:]
     calc = calc - np.min(calc)  # set min to zero
     calc = calc * coeffs[0]  # first coeff := scaling factor
-    return eval(metric)(calc, target) + 10*(np.sum(coeffs[1:]) - 1)**2
+    return eval(metric)(calc, target) \
+           + lambda1 * np.sum(np.abs(coeffs[1:])) \
+           + lambda2 * (np.sum(coeffs[1:]) - 1)**2
+
+def filter_coeffs_from_tol(coefficients, tol):
+    filtered_coeffs = []
+    for coeffs in coefficients:
+        bool_arr = coeffs < tol
+        if np.sum(bool_arr) == len(coeffs):
+            print('tolerance too big. choosing max concentration.')
+            idx = np.argmax(coeffs)
+            coeffs = np.zeros(len(coeffs))
+            coeffs[idx] = 1
+        else:
+            coeffs[bool_arr] = 0
+            coeffs = scale_coeffs_to_add_to_one([coeffs])[0]
+        filtered_coeffs.append(coeffs)
+    return np.array(filtered_coeffs)
 
 def get_coeffs_from_spectra(spectra, Refs, scaling=False, tol=None,
-                            metric='mean_absolute_error'):
+                            metric='mean_squared_error',
+                            lambda1=0.2, lambda2=2.):
     """Find the coeffs that minimize spectral recontruction error."""
     m = Refs.shape[0]
     if scaling:
@@ -163,36 +184,29 @@ def get_coeffs_from_spectra(spectra, Refs, scaling=False, tol=None,
         bounds = np.zeros((m + 1, 2))
         bounds[:, 1] = 1
         bounds[0, 1] = 5
-        coeffs = np.array([minimize(loss_function_with_scaling, coeffs_0,
-                           args=(Refs, spectrum, metric), bounds=bounds)['x']
+        coeffs = np.array([minimize(objective_function_with_scaling, coeffs_0,
+                           args=(Refs, spectrum, metric, lambda1, lambda2),
+                           bounds=bounds)['x']
                            for spectrum in spectra])
         scale, coefficients = coeffs[:, 0], scale_coeffs_to_add_to_one(coeffs[:, 1:])
         if tol is not None:
-            if np.sum(coefficients < tol) == len(coefficients):
-                idx = np.argmax(coefficients)
-                coefficients = np.zeros(len(coefficients))
-                coefficients[idx] = 1
-            else:
-                coefficients[coefficients < tol] = 0
-        return scale, scale_coeffs_to_add_to_one(coefficients)
+            coefficients = filter_coeffs_from_tol(coefficients, tol)
+        return scale, coefficients
     else:
         coeffs_0 = np.ones(m)/m
         bounds = np.zeros((m, 2))
         bounds[:, 1] = 1
-        coeffs = np.array([minimize(loss_function, coeffs_0,
-                           args=(Refs, spectrum, metric), bounds=bounds)['x']
+        coeffs = np.array([minimize(objective_function, coeffs_0,
+                           args=(Refs, spectrum, metric, lambda1, lambda2),
+                           bounds=bounds)['x']
                            for spectrum in spectra])
         coefficients = scale_coeffs_to_add_to_one(coeffs)
-        if np.sum(coefficients < tol) == len(coefficients):
-            idx = np.argmax(coefficients)
-            coefficients = np.zeros(len(coefficients))
-            coefficients[idx] = 1
-        else:
-            coefficients[coefficients < tol] = 0
-        return scale_coeffs_to_add_to_one(coefficients)
+        if tol is not None:
+            coefficients = filter_coeffs_from_tol(coefficients, tol)
+        return coefficients
 
 def plot_reconstructions(plot, data, coeffs, m, Energy, Refs, verbose=True,
-                         metric='mean_absolute_error', scale=None):
+                         metric='mean_absolute_error', scale=None, color=2):
     """Recon plot of spectra in a row."""
     fig, axes = plot
     preds, truths = [], []
@@ -206,8 +220,8 @@ def plot_reconstructions(plot, data, coeffs, m, Energy, Refs, verbose=True,
         true = true - np.min(true)
         truths.append(truths)
         ax = axes[i]
-        ax.plot(Energy, pred, '-', linewidth=4, c=plt.cm.tab20(0), label='predicted')
-        ax.plot(Energy, true, '-', linewidth=4, c=plt.cm.tab20(2), label='true')
+        ax.plot(Energy, pred, '-', linewidth=4, c=plt.cm.tab20(color), label='predicted')
+        ax.plot(Energy, true, '-', linewidth=4, c=plt.cm.tab20(14), label='true')
         format_axis(ax, ticks=(10, 20), fontsize=20)
         ax.legend(fontsize=20, loc=4)
     metric_name = metric.replace('_', ' ')
@@ -425,3 +439,86 @@ def get_xy_from_colms(df, clm1, clm2):
     y = y - np.min(y)
     y = y / np.max(y)
     return x, y
+
+def get_label_and_color(column_name):
+    ele_to_idx_map = {'Cd': 2, 'Te': 8, 'Se': 6, 'Cl': 4, 'exp': 1, 'As': 0}
+
+    for key in ele_to_idx_map.keys():
+        if key in column_name:
+            c = ele_to_idx_map[key]
+            if key == 'exp':
+                label = column_name.replace('exp ', '*').replace('standard', 'ref.')
+            else:
+                label = column_name.replace('merged', '').replace('symmetrized', '').replace('mp ', '')
+            break
+    return label, c
+
+def make_conc_bar_chart(plot, coeffs, data_columns, width=0.75, offset=0,
+                        varcolor=0, format_ticks=True):
+    
+    m = coeffs.shape[0]
+    fig, ax = plot
+    labels = ["$" + "P_{" + f"{i}" + "}$" for i in range(1, m + 1)]
+    colors = [plt.cm.tab20(varcolor), plt.cm.tab20(14)]
+
+    for i in range(coeffs.shape[0]):
+        conc_map = {num: coeffs[i, num] for num in range(coeffs.shape[1])}
+        sorted_conc_map = {k: v*100 for k, v in sorted(conc_map.items(),
+                           key=lambda item: item[1], reverse=True)}
+        bottoms = [np.sum(list(sorted_conc_map.values())[:tmp], axis=0)
+                   for tmp in range(coeffs.shape[1])]
+        keys = list(sorted_conc_map.keys())
+        for k, val in enumerate(list(sorted_conc_map.values())):
+            if val != 0:
+                key = keys[k]
+                xlabel = labels[i]
+                #color = colors[k%2]
+                color = colors[0]
+                bottom = bottoms[k]
+                rect = ax.bar(i + offset, val, width, label=k, bottom=bottom,
+                              fc=color, edgecolor='k', linewidth=2.5)
+                ax.bar_label(rect, labels=[key + 1], label_type='center', c='w',
+                             fontsize=18)
+            
+    set_spine_width(ax, width=2)
+
+    ax.tick_params(direction='out', width=2, length=10, which='major', axis='both')
+    ax.set_ylabel('Concentration (%)', fontsize=20)
+    if format_ticks:
+        ax.set_xticks(ax.get_xticks()[1:-1])
+        ax.set_xticklabels(labels, fontsize=20)
+        ax.set_yticks(np.array(ax.get_yticks())[:-1])
+        ax.set_yticklabels(np.array(ax.get_yticks(), dtype=int), fontsize=18)
+
+def get_error(coeffs, target, Refs, scale,
+              metric='mean_absolute_error'):
+    pred_spectrum = Refs.T @ coeffs
+    pred_spectrum = pred_spectrum * scale
+    pred_spectrum = pred_spectrum - np.min(pred_spectrum)
+    targte = target - np.min(target)
+    return eval(metric)(pred_spectrum, target)
+
+def get_errors_with_different_noises(Y_Refs, noises=np.arange(0, 0.06, 0.01),
+                                     metric='mean_absolute_error'):
+    """Return spectral recon error given minimization process for scaled vs unscaled spectra."""
+    Errors = []
+    for scale in noises:
+        print(f'Noise: {scale * 100}%')
+
+        N = 50
+        kwargs = {'N': N, 'scale': scale, 'dropout': 0.9, 'training': False}
+        test_data, test_coeffs = generate_linear_combos(Y_Refs, **kwargs)
+
+        unscaled_coeffs = get_coeffs_from_spectra(test_data, Y_Refs, scaling=False)
+        scales, scaled_coeffs = get_coeffs_from_spectra(test_data, Y_Refs, scaling=True)
+
+        errors = [[], [], []]
+        i = 0
+        for coeffs, scale in zip([test_coeffs, unscaled_coeffs, scaled_coeffs],
+                                 [np.ones(N),  np.ones(N),      scales]):
+            for j in range(N):
+                error = get_error(coeffs[j], test_data[j], Y_Refs, scale[j], metric=metric)
+                errors[i].append(error)
+            i += 1
+        Errors.append(errors)
+    return np.array(Errors)
