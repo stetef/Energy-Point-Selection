@@ -183,7 +183,7 @@ def get_coeffs_from_spectra(spectra, Refs, scaling=False, tol=None,
         coeffs_0 = np.ones(m + 1) / (m + 1)
         bounds = np.zeros((m + 1, 2))
         bounds[:, 1] = 1
-        bounds[0, 1] = 5
+        bounds[0, 1] = 20
         coeffs = np.array([minimize(objective_function_with_scaling, coeffs_0,
                            args=(Refs, spectrum, metric, lambda1, lambda2),
                            bounds=bounds)['x']
@@ -205,7 +205,7 @@ def get_coeffs_from_spectra(spectra, Refs, scaling=False, tol=None,
             coefficients = filter_coeffs_from_tol(coefficients, tol)
         return coefficients
 
-def plot_reconstructions(plot, data, coeffs, m, Energy, Refs, verbose=True,
+def plot_reconstructions(plot, data, coeffs, m, Energy, Refs, verbose=True, leg=True,
                          metric='mean_absolute_error', scale=None, color=2):
     """Recon plot of spectra in a row."""
     fig, axes = plot
@@ -223,7 +223,8 @@ def plot_reconstructions(plot, data, coeffs, m, Energy, Refs, verbose=True,
         ax.plot(Energy, pred, '-', linewidth=4, c=plt.cm.tab20(color), label='predicted')
         ax.plot(Energy, true, '-', linewidth=4, c=plt.cm.tab20(14), label='true')
         format_axis(ax, ticks=(10, 20), fontsize=20)
-        ax.legend(fontsize=20, loc=4)
+        if leg:
+            ax.legend(fontsize=20, loc=4)
     metric_name = metric.replace('_', ' ')
     if verbose:
         print(f'{metric_name}: {eval(metric)(pred, true)}')
