@@ -126,7 +126,6 @@ def make_scree_plot(data, n=5, threshold=0.95, show_first_PC=True):
     plt.xlabel('Number of Parameters', fontsize=22)
     plt.ylabel(f'Cumultative\nExplained Variance', fontsize=22)
     ax.tick_params(direction='in', width=2, length=8)
-    plt.show()
 
 def visualize_energy_points(plot, Energy, Refs, energy_points,
                             fontsize=20, ticks=(5, 10), label=None):

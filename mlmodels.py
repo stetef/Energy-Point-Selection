@@ -13,7 +13,7 @@ from keras.layers import Dense, BatchNormalization, LeakyReLU
 from keras.models import Sequential
 from keras.optimizers import RMSprop
 
-from utils import generate_linear_combos, get_coeffs_from_sepctra
+from utils import generate_linear_combos, get_coeffs_from_spectra
 from utils import format_axis
 
 
