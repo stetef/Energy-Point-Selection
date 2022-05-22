@@ -4,15 +4,17 @@ import os, re
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from scipy.stats import pearsonr
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MultipleLocator, FormatStrFormatter
+from matplotlib.ticker import FormatStrFormatter, MultipleLocator
 
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import *
+from sklearn.metrics.pairwise import cosine_similarity
 
 import umap
 
@@ -46,6 +48,7 @@ def parse_file(filename):
             data.append(parsed)
     f.close()
     columns = [ele.replace('_', ' ') for ele in data[0]]
+    columns = [ele.replace('  ', '_') for ele in columns]
     df = pd.DataFrame(data[1:], columns=columns)
     return df
 
@@ -139,43 +142,75 @@ def visualize_energy_points(plot, Energy, Refs, energy_points,
     if label is not None:
         ax.set_title(label, fontsize=fontsize)
 
-def scale_coeffs_to_add_to_one(coeff_mtx):
-    """For every coeff list in coeff_mtx, scale to add to one."""
-    return np.array([coeffs / np.sum(coeffs) for coeffs in coeff_mtx])
+def get_uncert_from_min_fun(result, ftol=2.220446049250313e-09):
+    # ftol obtained from
+    # https://docs.scipy.org/doc/scipy/reference/
+    # optimize.minimize-lbfgsb.html#optimize-minimize-lbfgsb
+    I = np.identity(len(result.x))
+    sigmas = np.zeros(len(result.x))
+    for i in range(len(result.x)):
+        hess_inv_i = result.hess_inv(I[i, :])[i]  # get diagonal entry
+        uncertainty_i = np.sqrt(max(1, abs(result.fun)) * ftol * hess_inv_i)
+        sigmas[i] = uncertainty_i
+    return sigmas
 
-def objective_function(coeffs, Refs, target, metric, lambda1, lambda2):
+def scale_coeffs_to_add_to_one(coeff_mtx, sigmas=None):
+    """For every coeff list in coeff_mtx, scale to add to one."""
+    sums = [np.sum(coeffs) for coeffs in coeff_mtx]
+    normalized_coeffs = np.array([coeff_mtx[i] / sums[i] for i in range(len(sums))])
+    if sigmas is not None:
+        rescaled_sigmas = np.array([sigmas[i] / sums[i] for i in range(len(sums))])
+        return normalized_coeffs, rescaled_sigmas
+    else:
+        return normalized_coeffs, None
+
+def objective_function(coeffs, Refs, target, lambda1, lambda2):
     calc = Refs.T @ coeffs
-    calc = calc - np.min(calc)  # set min to zero
-    return eval(metric)(calc, target) \
+    #calc = calc - np.min(calc)  # set min to zero
+    return np.sum((calc - target)**2) \
            + lambda1 * np.sum(np.abs(coeffs)) \
            + lambda2 * (np.sum(coeffs) - 1)**2
 
-def objective_function_with_scaling(coeffs, Refs, target, metric, lambda1, lambda2):
+def objective_function_with_scaling(coeffs, Refs, target, lambda1, lambda2):
     calc = Refs.T @ coeffs[1:]
-    calc = calc - np.min(calc)  # set min to zero
+    #calc = calc - np.min(calc)  # set min to zero
     calc = calc * coeffs[0]  # first coeff := scaling factor
-    return eval(metric)(calc, target) \
+    return np.sum((calc - target)**2) \
            + lambda1 * np.sum(np.abs(coeffs[1:])) \
            + lambda2 * (np.sum(coeffs[1:]) - 1)**2
 
-def filter_coeffs_from_tol(coefficients, tol):
+def filter_coeffs_from_tol(coefficients, tol, sigmas=None):
     filtered_coeffs = []
-    for coeffs in coefficients:
+    filtered_sigmas = []
+    for i, coeffs in enumerate(coefficients):
+        if sigmas is not None:
+            sigmas_i = sigmas[i]
         bool_arr = coeffs < tol
         if np.sum(bool_arr) == len(coeffs):
             print('tolerance too big. choosing max concentration.')
             idx = np.argmax(coeffs)
             coeffs = np.zeros(len(coeffs))
             coeffs[idx] = 1
+            if sigmas is not None:
+                sigmas_i = np.zeros(len(coeffs))
+                sigmas_i[idx] = sigmas[i, idx]
         else:
             coeffs[bool_arr] = 0
-            coeffs = scale_coeffs_to_add_to_one([coeffs])[0]
+            if sigmas is not None:
+                sigmas_i[bool_arr] = 0
+                coeffs, sigmas_i = scale_coeffs_to_add_to_one([coeffs], sigmas=[sigmas_i])
+                coeffs = coeffs[0]
+                sigmas_i = sigmas_i[0]
+            else:
+                coeffs, _ = scale_coeffs_to_add_to_one([coeffs])
+                coeffs = coeffs[0]
         filtered_coeffs.append(coeffs)
-    return np.array(filtered_coeffs)
+        if sigmas is not None:
+            filtered_sigmas.append(sigmas_i)
+    return np.array(filtered_coeffs), np.array(filtered_sigmas)
 
 def get_coeffs_from_spectra(spectra, Refs, scaling=False, tol=None,
-                            metric='mean_squared_error',
-                            lambda1=0.2, lambda2=2.):
+                            lambda1=10, lambda2=1e8, return_sigmas=True):
     """Find the coeffs that minimize spectral recontruction error."""
     m = Refs.shape[0]
     if scaling:
@@ -183,47 +218,63 @@ def get_coeffs_from_spectra(spectra, Refs, scaling=False, tol=None,
         bounds = np.zeros((m + 1, 2))
         bounds[:, 1] = 1
         bounds[0, 1] = 20
-        coeffs = np.array([minimize(objective_function_with_scaling, coeffs_0,
-                           args=(Refs, spectrum, metric, lambda1, lambda2),
-                           bounds=bounds)['x']
-                           for spectrum in spectra])
-        scale, coefficients = coeffs[:, 0], scale_coeffs_to_add_to_one(coeffs[:, 1:])
-        if tol is not None:
-            coefficients = filter_coeffs_from_tol(coefficients, tol)
-        return scale, coefficients
+        results = [minimize(objective_function_with_scaling, coeffs_0,
+                   args=(Refs, spectrum, lambda1, lambda2), bounds=bounds)
+                   for spectrum in spectra]
+        coeffs = np.array([results[i].x for i in range(len(results))])
+        if return_sigmas:
+            sigmas = np.array([get_uncert_from_min_fun(results[i]) for i in range(len(results))])
+            scales =  coeffs[:, 0]
+            coefficients, rescaled_sigmas = scale_coeffs_to_add_to_one(coeffs[:, 1:], sigmas=sigmas[:, 1:])
+            if tol is not None:
+                coefficients, rescaled_sigmas = filter_coeffs_from_tol(coefficients, tol, sigmas=rescaled_sigmas)
+            return scales, coefficients, rescaled_sigmas
+        else:
+            scales =  coeffs[:, 0]
+            coefficients, _ = scale_coeffs_to_add_to_one(coeffs[:, 1:])
+            if tol is not None:
+                coefficients, _ = filter_coeffs_from_tol(coefficients, tol)
+            return scales, coefficients, None
     else:
         coeffs_0 = np.ones(m)/m
         bounds = np.zeros((m, 2))
         bounds[:, 1] = 1
-        coeffs = np.array([minimize(objective_function, coeffs_0,
-                           args=(Refs, spectrum, metric, lambda1, lambda2),
-                           bounds=bounds)['x']
-                           for spectrum in spectra])
-        coefficients = scale_coeffs_to_add_to_one(coeffs)
+        results = [minimize(objective_function, coeffs_0,
+                   args=(Refs, spectrum, lambda1, lambda2),
+                   bounds=bounds) for spectrum in spectra]
+        coeffs = np.array([results[i].x for i in range(len(results))])
+        sigmas = np.array([get_uncert_from_min_fun(results[i]) for i in range(len(results))])
+        coefficients, rescaled_sigmas = scale_coeffs_to_add_to_one(coeffs, sigmas)
         if tol is not None:
-            coefficients = filter_coeffs_from_tol(coefficients, tol)
-        return coefficients
+            coefficients, rescaled_sigmas = filter_coeffs_from_tol(coefficients, tol, rescaled_sigmas)
+        return coefficients, rescaled_sigmas
 
-def plot_reconstructions(plot, data, coeffs, m, Energy, Refs, verbose=True, leg=True,
-                         metric='mean_absolute_error', scale=None, color=2):
+def plot_reconstructions(plot, data, coeffs, m, Energy, Refs, verbose=True,
+                         metric='mean_squared_error', scale=None, color=2,
+                         fontsize=18):
     """Recon plot of spectra in a row."""
     fig, axes = plot
     preds, truths = [], []
     for i in range(m):
-        pred = Refs.T @ coeffs[i]
+        pred = coeffs[i] @ Refs
+        pred = pred - np.min(pred)
         if scale is not None:
             pred = pred * scale[i]
-        pred = pred - np.min(pred)
         preds.append(pred)
         true = data[i]
-        true = true - np.min(true)
         truths.append(truths)
         ax = axes[i]
+        if i == m -1:
+            leg = True
+        else:
+            leg = False
         ax.plot(Energy, pred, '-', linewidth=4, c=plt.cm.tab20(color), label='predicted')
         ax.plot(Energy, true, '-', linewidth=4, c=plt.cm.tab20(14), label='true')
-        format_axis(ax, ticks=(10, 20), fontsize=20)
+        if verbose:
+            format_axis(ax, ticks=(10, 20), fontsize=16)
+            ax.set_xlim(11862, 11918)
         if leg:
-            ax.legend(fontsize=20, loc=4)
+            ax.legend(fontsize=fontsize, loc='center left', bbox_to_anchor=(1, 0.5))
     metric_name = metric.replace('_', ' ')
     if verbose:
         print(f'{metric_name}: {eval(metric)(pred, true)}')
@@ -297,7 +348,6 @@ def two_dimensional_visualization(data, Refs, data_columns, N_refs=None, ncol=2,
     ax.set_xticks([])
     ax.set_xlabel(f'${method}_1$', fontsize=fontsize)
     ax.set_ylabel(f'${method}_2$', fontsize=fontsize)
-    plt.show()
 
 def set_spine_width(ax, width=2):
     for spine in ['top','bottom','left','right']:
@@ -453,7 +503,7 @@ def get_label_and_color(column_name):
             break
     return label, c
 
-def make_conc_bar_chart(plot, coeffs, data_columns, width=0.75, offset=0,
+def make_conc_bar_chart(plot, coeffs, data_columns, yerrs, width=0.75, offset=0,
                         varcolor=0, format_ticks=True):
     
     m = coeffs.shape[0]
@@ -461,24 +511,35 @@ def make_conc_bar_chart(plot, coeffs, data_columns, width=0.75, offset=0,
     labels = ["$" + "P_{" + f"{i}" + "}$" for i in range(1, m + 1)]
     colors = [plt.cm.tab20(varcolor), plt.cm.tab20(14)]
 
-    for i in range(coeffs.shape[0]):
+    for i in range(m):
         conc_map = {num: coeffs[i, num] for num in range(coeffs.shape[1])}
-        sorted_conc_map = {k: v*100 for k, v in sorted(conc_map.items(),
+        sorted_conc_map = {idx: conc*100 for idx, conc in sorted(conc_map.items(),
                            key=lambda item: item[1], reverse=True)}
         bottoms = [np.sum(list(sorted_conc_map.values())[:tmp], axis=0)
                    for tmp in range(coeffs.shape[1])]
         keys = list(sorted_conc_map.keys())
-        for k, val in enumerate(list(sorted_conc_map.values())):
-            if val != 0:
+
+        if yerrs is not None:
+            yerrs_sorted = {num: yerrs[i, num] * 100
+                            for num, conc in sorted(conc_map.items(),
+                            key=lambda item: item[1], reverse=True)}
+
+        for k, conc in enumerate(list(sorted_conc_map.values())):
+            if conc != 0:
                 key = keys[k]
                 xlabel = labels[i]
-                #color = colors[k%2]
                 color = colors[0]
                 bottom = bottoms[k]
-                rect = ax.bar(i + offset, val, width, label=k, bottom=bottom,
-                              fc=color, edgecolor='k', linewidth=2.5)
+                error_kw = {'linewidth': 1.5, 'ecolor': 'w', 'capsize': 4}
+                if yerrs is None:
+                    yerr = None
+                else:
+                    yerr = yerrs_sorted[k]
+                rect = ax.bar(i + offset, conc, width, yerr=yerr, 
+                              label=k, bottom=bottom, error_kw=error_kw,
+                              fc=color, edgecolor='k', linewidth=1.)
                 ax.bar_label(rect, labels=[key + 1], label_type='center', c='w',
-                             fontsize=18)
+                             fontsize=18, fontweight='bold')
             
     set_spine_width(ax, width=2)
 
@@ -524,3 +585,183 @@ def get_errors_with_different_noises(Y_Refs, noises=np.arange(0, 0.06, 0.01),
             i += 1
         Errors.append(errors)
     return np.array(Errors)
+
+def evaluate_similarity(x, y, metric):
+    if metric == 'cosine similarity':
+        score = cosine_similarity([x], Y=[y])[0][0]
+    elif metric == 'Pearson correlation':
+        score, pval = pearsonr(x, y)
+    elif metric == '1 - $\delta$':
+        score = 1 - np.average(np.abs(x - y))
+    elif metric == '1 - MSE':
+        metric = 'mean_squared_error'
+        score = 1 - eval(metric)(x, y)
+    elif metric == '1 - IADR':
+        score = 1 - np.sum(np.abs(x - y)) / max(np.sum(x), np.sum(y))
+    return score
+
+def get_sets_from_subset_indices(subset_indices, basis):
+    subset = np.array([ele for i, ele in enumerate(basis) if i in subset_indices])
+    non_subset_indices = np.array([i for i, ele in enumerate(basis) if i not in subset_indices])
+    non_subset = np.array([ele for i, ele in enumerate(basis) if i not in subset_indices])
+    return subset, non_subset_indices, non_subset
+
+def plot_hist_scores_per_element(plot, hist, data_columns, subset_size):
+    fig, ax = plot
+    n = len(hist)
+    for i in range(n):
+        if hist[i] != []:
+            ax.bar(i, np.average(hist[i]), color=plt.cm.tab20(0), edgecolor='w')
+    
+    ax.tick_params(direction='out', width=2, length=6, axis='both')
+    plt.setp(ax.get_yticklabels(), fontsize=14)
+    ax.set_xticks(np.arange(n))
+    ax.set_xticklabels(data_columns, fontsize=12, rotation=90)
+    ylabel = r"$\widebar{R}_{N = " + f"{subset_size}" + r"}$"
+    ax.set_ylabel(ylabel, fontsize=18)
+    ax.set_xlim(-1, n)
+
+def get_score_from_subset(subset, non_subset, metric):
+    _, coeffs_hat, _ = get_coeffs_from_spectra(non_subset, subset, scaling=True, tol=None,
+                                               lambda1=0, lambda2=2.)
+    recons = coeffs_hat @ subset
+    scores = [evaluate_similarity(x, y, metric) for x, y in zip(non_subset, recons)]
+    return np.average(scores)
+
+def initialize_random_select_from_cuts(segments, sample_sizes, n):
+    cut_indices = get_cuts(np.arange(n), segments, sample_sizes)
+    subset_indices = []
+    for sample_size, cut_idxs in zip(sample_sizes, cut_indices):
+        cut_selection = np.random.choice(cut_idxs, size=sample_size, replace=False)
+        for i in cut_selection:
+            subset_indices.append(i)
+    return np.sort(np.array(subset_indices))
+
+def get_cut_num_from_i(idx, cut_to_idx_map):
+    for cut_num, cut_idxs in cut_to_idx_map.items():
+        if idx in cut_idxs:
+            return cut_num
+
+def get_test_i_from_cut_num(non_subset_indices, cut_to_replace, cut_to_idx_map):
+    non_subset_indices_in_cut = [idx for idx in list(cut_to_idx_map[cut_to_replace]) if idx in non_subset_indices]
+    return np.random.choice(non_subset_indices_in_cut, size=1, replace=False)[0]
+
+def sample_test_i_from_cuts(subset_indices, non_subset_indices, cut_sizes, cut_to_idx_map):
+    n = np.sum(cut_sizes)
+    
+    replace_subset_i = np.random.randint(0, high=len(subset_indices))
+    replace_i = subset_indices[replace_subset_i]
+    cut_to_replace = get_cut_num_from_i(replace_i, cut_to_idx_map)
+    
+    test_i = get_test_i_from_cut_num(non_subset_indices, cut_to_replace, cut_to_idx_map)
+    
+    return replace_subset_i, test_i
+
+def get_cuts(data, segments, sample_sizes):
+    cuts = []
+    for i in range(len(segments) - 1):
+        k = segments[i]
+        l = segments[i + 1]
+        cut = [data[j] for j in range(k, l)]
+        cuts.append(cut)
+    return cuts
+
+def plot_error_vs_lambda(plot, Unscaled_errors, Scaled_errors,
+                         num_contribs_unscale, num_contribs_scale, p=0.5):
+    lambdas = np.array(list(Unscaled_errors.keys()))
+    
+    unscal = np.array(list(Unscaled_errors.values())) * 10
+    unscal_contribs = np.array(list(num_contribs_unscale.values()))
+
+    scal = np.array(list(Scaled_errors.values())) * 10
+    scal_contribs = np.array(list(num_contribs_scale.values()))
+    
+    fig, axes = plot
+    
+    y1 = [unscal, unscal_contribs, p*unscal + (1 - p)*unscal_contribs]
+    y2 = [scal, scal_contribs, p*scal + (1 - p)*scal_contribs]
+    ylabels = ['$MSE$', '$\overline{N}_{contributions}$', '$' + f'{p:.2f}' +
+               '*MSE + ' + f'{1-p:.2f}' + '*\overline{N}_{contributions}$']
+
+    for i, ax in enumerate(axes):
+        ax.plot(lambdas, y1[i], 'x-', c=plt.cm.tab20(0), label='unscaled')
+        ax.plot(lambdas, y2[i], 'o-', c=plt.cm.tab20(2), label='scaled')
+
+        if i == 1:
+            ax.legend(fontsize=18)
+        ax.tick_params(direction='out', width=2, length=8, which='major', axis='both')
+        #if i == 1:
+        #    ax.yaxis.set_major_locator(MultipleLocator(2.))
+        ax.set_ylabel(ylabels[i], fontsize=18)
+        ax.set_xlabel('$\lambda_1$', fontsize=18)
+        plt.setp(ax.get_xticklabels(), fontsize=16)
+        plt.setp(ax.get_yticklabels(), fontsize=16)
+        set_spine_width(ax, width=1.5)
+
+def monte_carlo_sample(basis, subset, subset_indices, non_subset, non_subset_indices, subset_size,
+                       metric, beta, cut_sizes, cut_to_idx_map):
+    
+    if subset_size is not None:
+        replace_subset_i = np.random.randint(0, high=len(subset_indices))
+        test_basis_i = np.random.randint(0, high=len(non_subset_indices))
+    else:
+        replace_subset_i, test_basis_i = sample_test_i_from_cuts(subset_indices, non_subset_indices,
+                                                             cut_sizes, cut_to_idx_map)
+    
+    test_subset_indices = subset_indices.copy()
+    test_subset_indices[replace_subset_i] = test_basis_i
+    
+    test_subset, test_non_subset_indices, test_non_subset = get_sets_from_subset_indices(test_subset_indices, basis)
+    
+    avg_score = get_score_from_subset(subset, non_subset, metric)
+    test_avg_score = get_score_from_subset(test_subset, test_non_subset, metric)
+    
+    delta_u = avg_score - test_avg_score
+    if test_avg_score < avg_score:
+        print(f'P={np.exp(-beta * delta_u)}')
+    if test_avg_score > avg_score:
+        print('Replacing')
+        return test_subset, test_subset_indices, test_non_subset_indices, test_non_subset, test_avg_score
+    elif test_avg_score < avg_score and np.random.random() < np.exp(-beta * delta_u):
+        print(f'Replacing cuz T')
+        return test_subset, test_subset_indices, test_non_subset_indices, test_non_subset, test_avg_score
+    else:
+        print("Keeping")
+        return subset, subset_indices, non_subset_indices, non_subset, avg_score
+
+def sample_basis(basis, num_iters, subset_size, segments=None, sample_sizes=None,
+                 cut_sizes=None, cut_to_idx_map=None, metric='cosine similarity',
+                 monte_carlo=False, beta=3e5, step_size=1e4):
+    indices = np.arange(basis.shape[0])
+    total_score = []
+    histogram_per_basis_element = [[] for i in range(basis.shape[0])]
+    
+    for i in range(num_iters):
+        print(i + 1, end='\r')
+                
+        if monte_carlo:
+            if i == 0:
+                if subset_size is None:
+                    subset_indices = initialize_random_select_from_cuts(segments, sample_sizes, len(basis))
+                else:
+                    subset_indices = np.random.choice(indices, size=subset_size, replace=False)
+                subset, non_subset_indices, non_subset = get_sets_from_subset_indices(subset_indices, basis)    
+            else:
+                subset, subset_indices, non_subset_indices, non_subset, score = monte_carlo_sample(
+                    basis, subset, subset_indices, non_subset, non_subset_indices, subset_size, 
+                    metric, beta, cut_sizes, cut_to_idx_map)
+                beta =+ step_size  
+        else:
+            subset_indices = np.random.choice(indices, size=subset_size, replace=False)
+            subset, non_subset_indices, non_subset = get_sets_from_subset_indices(subset_indices, basis)
+        
+        score = get_score_from_subset(subset, non_subset, metric)
+        total_score.append(score)
+        for idx in subset_indices:
+            histogram_per_basis_element[idx].append(score)
+    
+    if monte_carlo:
+        print(subset_indices)
+        return np.array(total_score), subset_indices
+    else:
+        return np.array(total_score), histogram_per_basis_element
